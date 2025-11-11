@@ -3,8 +3,8 @@
 This module provides a small workstation-style interface that lets users paste
 JSON describing a song arrangement and export a fully rendered WAV file.  The
 renderer contains a lightweight synthesis engine capable of layering multiple
-instruments, driving drum patterns, and applying EDM-inspired effects such as
-side-chain pumping and tempo-synced delay.
+instruments ranging from bright EDM leads to gentler acoustic-inspired voices,
+along with optional tempo-synced delay and side-chain style dynamics.
 """
 
 from __future__ import annotations
@@ -169,6 +169,7 @@ class SongRenderer:
             "length_bars": 4,
             "beats_per_bar": 4,
             "scale": "C minor",
+            "effects": {"delay": True, "sidechain": True},
             "instruments": [
                 {
                     "name": "Analog Lead",
@@ -390,11 +391,38 @@ class SongRenderer:
         def pluck(freq: float, t: float) -> float:
             return math.sin(2 * math.pi * freq * t) * math.exp(-3 * t)
 
+        def piano(freq: float, t: float) -> float:
+            fundamental = sine(freq, t)
+            second = sine(freq * 2, t) * math.exp(-3.5 * t)
+            third = sine(freq * 3, t) * math.exp(-5.5 * t)
+            return (fundamental + 0.6 * second + 0.3 * third) / 1.9
+
+        def accordion_wave(freq: float, t: float) -> float:
+            fundamental = sine(freq, t)
+            third = sine(freq * 3, t) * 0.35
+            fifth = sine(freq * 5, t) * 0.18
+            return (fundamental + third + fifth) / 1.53
+
+        def violin_wave(freq: float, t: float) -> float:
+            fundamental = sine(freq, t)
+            harmonic = sine(freq * 2, t) * 0.45
+            return (fundamental + harmonic) / 1.45
+
+        def upright_bass_wave(freq: float, t: float) -> float:
+            fundamental = sine(freq, t)
+            overtone = sine(freq * 2, t) * math.exp(-4 * t) * 0.5
+            return (fundamental + overtone) / 1.5
+
         mapping = {
             "saw_lead": saw,
             "bass": square,
             "pad": sine,
             "plucks": pluck,
+            "piano": piano,
+            "accordion": accordion_wave,
+            "acoustic_guitar": pluck,
+            "violin": violin_wave,
+            "upright_bass": upright_bass_wave,
         }
         return mapping.get(instrument_type, sine)
 
@@ -418,11 +446,64 @@ class SongRenderer:
                 return max(0.0, 1.0 - (t - (duration - 0.05)) / 0.05)
             return 1.0
 
+        def piano_envelope(t: float, duration: float) -> float:
+            attack = max(min(duration * 0.1, 0.02), 0.005)
+            if t < attack:
+                return t / attack
+            decay = max(duration * 0.6, 0.1)
+            if t < decay:
+                progress = (t - attack) / max(decay - attack, 0.001)
+                return max(0.0, 1.0 - 0.3 * progress)
+            tail = max(duration - decay, 0.001)
+            return max(0.0, 0.7 * (1.0 - (t - decay) / tail))
+
+        def accordion_envelope(t: float, duration: float) -> float:
+            attack = min(0.15, duration * 0.2)
+            if t < attack:
+                return t / attack
+            release = min(0.2, duration * 0.2)
+            if t > duration - release:
+                return max(0.0, 1.0 - (t - (duration - release)) / max(release, 0.001))
+            return 1.0
+
+        def guitar_envelope(t: float, duration: float) -> float:
+            attack = max(min(duration * 0.1, 0.02), 0.003)
+            if t < attack:
+                return t / attack
+            decay = max(duration * 0.4, 0.05)
+            if t < decay:
+                return max(0.0, 1.0 - 0.5 * (t - attack) / max(decay - attack, 0.001))
+            tail = max(duration - decay, 0.001)
+            return max(0.0, 0.5 * (1.0 - (t - decay) / tail))
+
+        def violin_envelope(t: float, duration: float) -> float:
+            attack = min(0.2, duration * 0.25)
+            if t < attack:
+                return t / attack
+            release = min(0.25, duration * 0.25)
+            if t > duration - release:
+                return max(0.0, 1.0 - (t - (duration - release)) / max(release, 0.001))
+            return 1.0
+
+        def upright_bass_envelope(t: float, duration: float) -> float:
+            attack = min(0.05, duration * 0.2)
+            if t < attack:
+                return t / attack
+            release = min(0.2, duration * 0.3)
+            if t > duration - release:
+                return max(0.0, 1.0 - (t - (duration - release)) / max(release, 0.001))
+            return 1.0
+
         mapping = {
             "saw_lead": fast_attack_release,
             "plucks": fast_attack_release,
             "pad": long_pad,
             "bass": bass_envelope,
+            "piano": piano_envelope,
+            "accordion": accordion_envelope,
+            "acoustic_guitar": guitar_envelope,
+            "violin": violin_envelope,
+            "upright_bass": upright_bass_envelope,
         }
         return mapping.get(instrument_type, fast_attack_release)
 
@@ -436,10 +517,18 @@ class SongRenderer:
         def pad_chorus(amp: float, t: float) -> float:
             return amp * (0.6 + 0.4 * math.sin(2 * math.pi * 0.25 * t + 1.2))
 
+        def gentle_vibrato(amp: float, t: float) -> float:
+            return amp * (1.0 + 0.035 * math.sin(2 * math.pi * 4.5 * t))
+
+        def slow_vibrato(amp: float, t: float) -> float:
+            return amp * (1.0 + 0.02 * math.sin(2 * math.pi * 3.0 * t))
+
         mapping = {
             "saw_lead": vibrato,
             "bass": bass_drive,
             "pad": pad_chorus,
+            "accordion": gentle_vibrato,
+            "violin": slow_vibrato,
         }
         return mapping.get(instrument_type)
 
@@ -512,7 +601,7 @@ class RendererApp(tk.Tk):
         header = ttk.Frame(self)
         header.pack(fill="x", padx=16, pady=(16, 8))
 
-        ttk.Label(header, text="JSON to EDM Song Renderer", style="Header.TLabel").pack(side="left")
+        ttk.Label(header, text="JSON to Song Renderer", style="Header.TLabel").pack(side="left")
         ttk.Label(header, textvariable=self.status_var, foreground="#666666").pack(side="right")
 
         content = ttk.Frame(self)
@@ -540,14 +629,15 @@ class RendererApp(tk.Tk):
         ttk.Label(control_frame, text="Tips", font=("Helvetica", 12, "bold")).pack(anchor="w", pady=(20, 6))
         tips = (
             "• Use beats for `start` times to stay in sync.\n"
-            "• Instruments: saw_lead, bass, pad, plucks, drumkit.\n"
+            "• Instruments: piano, accordion, acoustic_guitar, violin, upright_bass,\n"
+            "  plus saw_lead, bass, pad, plucks, drumkit.\n"
             "• Pad entries accept chord names like 'Cm' or 'A#maj'."
         )
         ttk.Label(control_frame, text=tips, justify="left", wraplength=250).pack(anchor="w")
 
         footer = ttk.Frame(self)
         footer.pack(fill="x", padx=16, pady=(0, 16))
-        ttk.Label(footer, text="Crafted for rich, multi-layered EDM textures.").pack(side="left")
+        ttk.Label(footer, text="Crafted for expressive electronic and acoustic textures.").pack(side="left")
 
     # ---------------------------- UI callbacks ------------------------------
 
@@ -558,13 +648,22 @@ class RendererApp(tk.Tk):
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 data = f.read()
-            json.loads(data)
+            song_data = json.loads(data)
         except (OSError, json.JSONDecodeError) as exc:
             messagebox.showerror("Error", f"Failed to load JSON: {exc}")
             return
         self.editor.delete("1.0", tk.END)
         self.editor.insert("1.0", data)
         self.status_var.set(f"Loaded {os.path.basename(file_path)}")
+        self._apply_song_defaults(song_data)
+
+    def _apply_song_defaults(self, song_data: Dict) -> None:
+        effects = song_data.get("effects") if isinstance(song_data, dict) else None
+        if isinstance(effects, dict):
+            if "delay" in effects:
+                self.delay_var.set(bool(effects["delay"]))
+            if "sidechain" in effects:
+                self.sidechain_var.set(bool(effects["sidechain"]))
 
     def _save_wav(self) -> None:
         try:
@@ -606,6 +705,7 @@ class RendererApp(tk.Tk):
         pretty = json.dumps(demo, indent=2)
         self.editor.delete("1.0", tk.END)
         self.editor.insert("1.0", pretty)
+        self._apply_song_defaults(demo)
         self.status_var.set("Demo song inserted – tweak and render!")
 
 
